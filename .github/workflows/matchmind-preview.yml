@@ -1,0 +1,96 @@
+name: MatchMind development preview
+
+# This workflow publishes only to the separate matchmind-preview GitHub Pages site.
+# It never changes kennedychinazam/matchmind, production GitHub Pages,
+# the private owner app, Cloudflare, or any Supabase data.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '8,23,38,53 * * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: matchmind-preview-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.freshness.outputs.changed }}
+    steps:
+      - name: Checkout public development candidate
+        uses: actions/checkout@v4
+        with:
+          repository: kennedychinazam/matchmind
+          ref: codex/wo62b-public-release-20261110
+          path: source
+          persist-credentials: false
+
+      - name: Check whether source changed
+        id: freshness
+        env:
+          PREVIEW_MARKER: https://kennedychinazam.github.io/matchmind-preview/SOURCE-COMMIT.txt
+        run: |
+          set -euo pipefail
+          current="$(git -C source rev-parse HEAD)"
+          published="$(curl -fsSL --connect-timeout 5 --max-time 12 "$PREVIEW_MARKER" 2>/dev/null || true)"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] || [ "$current" != "$published" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Development source changed or manual refresh requested."
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No new development commit. Skipping build and deployment."
+          fi
+
+      - name: Use Node.js
+        if: steps.freshness.outputs.changed == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build isolated staging site
+        if: steps.freshness.outputs.changed == 'true'
+        working-directory: source
+        run: |
+          set -euo pipefail
+          node staging/build-preview.mjs staging/dist
+          test -s staging/dist/index.html
+          test -s staging/dist/sw.js
+          test -s staging/dist/manifest.webmanifest
+          test -s staging/dist/BUILD-INFO.json
+          grep -q 'stagingGuard' staging/dist/index.html
+          if grep -Eq 'toqfdrcjzwnlydqekude|sb_secret_|service_role' staging/dist/index.html; then
+            echo "Refusing deployment: production project or privileged credential marker found."
+            exit 1
+          fi
+          git rev-parse HEAD > staging/dist/SOURCE-COMMIT.txt
+          printf 'User-agent: *\nDisallow: /\n' > staging/dist/robots.txt
+          touch staging/dist/.nojekyll
+
+      - name: Configure GitHub Pages
+        if: steps.freshness.outputs.changed == 'true'
+        uses: actions/configure-pages@v5
+
+      - name: Upload staging-only website
+        if: steps.freshness.outputs.changed == 'true'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: source/staging/dist
+
+  deploy:
+    if: needs.build.outputs.changed == 'true'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Publish to separate preview URL
+        id: deployment
+        uses: actions/deploy-pages@v4
