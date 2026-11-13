@@ -1,0 +1,17 @@
+name: Verify protected staging binding
+on: workflow_dispatch
+permissions: {contents: read}
+jobs:
+  binding:
+    environment: matchmind-real-data-preview
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify binding and derive installation digest
+        env:
+          MM_STAGING_MIRROR_TOKEN: ${{ secrets.MM_STAGING_MIRROR_TOKEN }}
+        shell: python
+        run: |
+          import os,hashlib
+          token=os.environ.get('MM_STAGING_MIRROR_TOKEN','')
+          if len(token)<32: raise SystemExit('Protected MM_STAGING_MIRROR_TOKEN missing or too short')
+          print('MM_TOKEN_SHA256='+hashlib.sha256(token.encode()).hexdigest())
